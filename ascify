@@ -1,0 +1,128 @@
+#!/bin/bash
+
+
+options=$(getopt -l "yes,dry-run,help,version,directory,recursive,encoding:" -o "ynhvdre:" -- "$@")
+
+[ $? -ne 0 ] && exit 1
+
+eval set -- "$options"
+
+unset yes dry
+rec="-maxdepth 1"
+dir="! -type d"
+enc="UTF-8"
+
+function showHelp {
+cat << EOF 
+Usage: ./ascify -e <enc> [-ynhvdre]
+-y, --yes              Don't ask for confirmation
+-h, --help             Display this message
+-n, --dry-run          Don't change names, print them instead
+-v, --version          Display current version of the program
+-d, --directory        Enable renaming directories
+-r, --recursive        Enable renaming files in subdirectories
+-e enc, --encoding=enc Set encoding of the original names. Default is $enc.
+EOF
+}
+
+function showVersion {
+cat << EOF
+ascify, version 0.1.0
+EOF
+}
+
+
+
+while true; do
+  #echo "< $1 >"
+  case "$1" in
+    -h | --help)
+      showHelp
+      exit 0;;
+    -v | --version) 
+      showVersion
+      exit 0;;
+    -y | --yes)
+      export yes=1;;
+    -n | --dry-run)
+      export dry=1;;
+    -d | --directory)
+      unset dir;;
+    -r | --recursive)
+      unset rec;;
+    -e | --encoding)
+      enc="$2"; shift ;;
+    --)
+      shift
+      break;;
+  esac
+  shift
+done
+
+# https://en.wikipedia.org/wiki/Romanization_of_Russian#Transliteration_table
+declare -A dictionary=(
+  ["Ж"]="Zh" ["Х"]="Kh" ["Ц"]="Ts" ["Ч"]="Ch" ["Ш"]="Sh" ["Щ"]="Shch" ["Ю"]="iu" ["Я"]="Ia" \
+  ["ж"]="zh" ["х"]="kh" ["ц"]="ts" ["ч"]="ch" ["ш"]="sh" ["щ"]="shch" ["ю"]="iu" ["я"]="ia"
+)
+
+Cyr='АБВГДЕЁЗИЙКЛМНОПРСТУФЫЭ'
+Lat='ABVGDEEZIIKLMNOPRSTUFYE'
+cyr='абвгдеёзийклмнопрстуфыэ'
+lat='abvgdeeziiklmnoprstufye'
+
+function cyrToASCII {
+  inp="$1"
+  out=""
+  for (( i=0; i<${#inp}; i++ )); do
+    char="${inp:$i:1}"
+    case "$char" in 
+      [ЖХЦЧШЩЮЯжхцчшщюя]) out+="${dictionary[$char]}";;
+      *) out+="$char";;
+    esac
+  done
+  sed "y/$Cyr$cyr/$Lat$lat/" <<< "$out"
+}
+
+shopt -s extglob
+
+function renameFile {
+  new_name="$2" #fix
+  if [ -z "$new_name" ]; then
+    path="${1%/*}"
+    new_name="${1##*/}"
+    new_name="$(cyrToASCII "$new_name")"
+    new_name="$(iconv -f $enc -t ASCII//TRANSLIT <<< "$new_name")"
+    new_name="${new_name//+([[:blank:]])/_}"
+    new_name="${new_name//+([^-)(.0-:@-z])/}"
+    new_name="$path/$new_name"
+  fi
+
+  file="$new_name"
+  counter=0
+  while [[ -e "$file" ]]; do
+    ((counter++))
+    file="$new_name($counter)"
+  done
+  new_name="$file"
+
+  echo -ne "$1 ->\n$new_name"
+  if [ -z "$dry" ] && [ -z "$yes" ]; then
+    read -r -n 1 -p " [yes/no/edit]" var </dev/tty
+    case $var in
+      [yY]) mv "$1" "$new_name"; echo;;
+      [eE])
+        echo
+        read -re -i "$new_name" var </dev/tty
+        renameFile "$1" "$var" ;;
+      *) echo;;
+    esac
+  else
+    [ ! -z "$yes" ] && [ -z "$dry" ] && mv "$1" "$new_name"
+    echo
+  fi
+}
+
+while IFS= read -r file; do
+  renameFile "$file" ""
+done < <(find "$PWD" -depth -regextype posix-extended $rec $dir \
+              ! -regex '.*/[-)(.0-:@-z]+$')
